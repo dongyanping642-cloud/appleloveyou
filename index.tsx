@@ -161,7 +161,7 @@ const App = () => {
     <div className="min-h-screen bg-[#080a0f] text-slate-200">
       {view === 'HOME' && (
         <div className="flex flex-col items-center justify-center min-h-screen animate-in fade-in duration-1000">
-          <h1 className="text-7xl font-black mb-4">辩手训练场</h1>
+          <h1 className="text-7xl font-black mb-4 text-orange-500">辩手训练场</h1>
           <p className="text-slate-600 tracking-[0.5em] mb-12">MINIMALIST LOGIC SPACE</p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 w-full max-w-5xl">
             {[{id: GameMode.SOLO, t: 'AI 对垒'}, {id: GameMode.AI_VS_AI, t: '观摩博弈'}, {id: GameMode.DUO, t: '本地切磋'}].map(m => (

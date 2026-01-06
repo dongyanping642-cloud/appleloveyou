@@ -101,7 +101,7 @@ const App: React.FC = () => {
       {gameState === 'HOME' && (
         <div className="flex flex-col items-center justify-center min-h-screen p-10 animate-in fade-in duration-1000">
           <div className="text-center mb-20">
-            <h1 className="text-6xl md:text-8xl font-black tracking-tighter text-white mb-6 uppercase">辩手训练场</h1>
+            <h1 className="text-6xl md:text-8xl font-black tracking-tighter text-orange-500 mb-6 uppercase">辩手训练场</h1>
             <p className="text-slate-600 tracking-[0.6em] text-[10px] uppercase font-light tracking-widest">Minimalist Logic Combat Space</p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 w-full max-w-6xl mb-12">
@@ -111,7 +111,7 @@ const App: React.FC = () => {
               { id: GameMode.DUO, title: '本地切磋', desc: '双人面对面，定义你的战场', icon: 'fa-user-friends' }
             ].map(m => (
               <button key={m.id} onClick={() => { setConfig({...config, mode: m.id as GameMode}); setGameState('SETUP'); }} className="group glass p-10 rounded-[2.5rem] text-left hover:border-orange-500/40 transition-all duration-500 hover:-translate-y-2 shadow-sm hover:shadow-orange-500/5">
-                <i className={`fas ${m.icon} text-2xl text-orange-500 mb-6 group-hover:scale-110 transition-all`}></i>
+                <i className="fas fa-brain animate-pulse text-2xl text-orange-500 mb-6 group-hover:scale-110 transition-all"></i>
                 <h3 className="text-xl font-bold mb-2">{m.title}</h3>
                 <p className="text-xs text-slate-500 font-light leading-relaxed">{m.desc}</p>
               </button>
