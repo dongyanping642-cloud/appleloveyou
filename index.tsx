@@ -3,26 +3,22 @@ import React, { useState, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { GoogleGenAI, Type } from "@google/genai";
 
-// --- 1. 类型定义 (Types) ---
+// --- 1. 类型定义 ---
 enum GameMode { SOLO = 'SOLO', DUO = 'DUO', AI_VS_AI = 'AI_VS_AI' }
 enum Side { PRO = 'PRO', CON = 'CON' }
 
-interface Debater {
-  id: string; name: string; description: string; style: string; avatar: string;
-}
-
+interface Debater { id: string; name: string; description: string; style: string; avatar: string; }
 interface Message {
   role: 'system' | 'user' | 'ai';
   content: string; senderName: string; timestamp: number; side?: Side;
   sources?: { uri: string; title: string }[];
 }
-
 interface CoachAnalysis {
   userLogic: string; opponentLogic: string; rebuttalStrategies: string[];
   goldenSentences: string[]; slangOrMeme: string; supportRate: number;
 }
 
-// --- 2. 核心数据 (Constants) ---
+// --- 2. 辩手数据池 ---
 const DEBATERS: Debater[] = [
   { id: 'cm', name: '尘鸣', description: '呼唤爱与真理。', style: '理性与感性平衡，擅长升华价值。', avatar: 'https://picsum.photos/seed/cm/200/200' },
   { id: 'hzz', name: '皇智忠', description: '少爷，心理学大师。', style: '擅长撕开事物表象，脑洞大开。', avatar: 'https://picsum.photos/seed/hzz/200/200' },
@@ -53,10 +49,12 @@ const DEBATERS: Debater[] = [
 const RANDOM_TOPICS = ["应不应该支持年轻人‘断亲’？", "预知未来伴侣寿命要不要看？", "AI作品该享有版权吗？", "精致穷 vs 寒酸富？", "救100个普通人还是1个科学家？"];
 const DANMU_POOL = ["这逻辑太丝滑了！", "少爷还是你少爷啊...", "金句，我悟了。", "对面逻辑碎了...", "教练我想学辩论！"];
 
-// --- 3. AI 服务 (AI Services) ---
-const aiClient = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// --- 3. AI 调用函数 (封装在内部以防 API_KEY 缺失导致崩溃) ---
+const fetchDebaterResponse = async (topic: string, debater: Debater, side: Side, history: Message[]) => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) return { text: "错误：未配置 API_KEY。请在 Vercel 环境变量中设置 API_KEY。", sources: [] };
 
-const getDebaterResponse = async (topic: string, debater: Debater, side: Side, history: Message[]) => {
+  const ai = new GoogleGenAI({ apiKey });
   const sideText = side === Side.PRO ? '正方' : '反方';
   const systemInstruction = `你现在是著名辩手 ${debater.name}。风格：${debater.style}。辩题：${topic}。立场：${sideText}。请在400字内发言。`;
   
@@ -64,29 +62,41 @@ const getDebaterResponse = async (topic: string, debater: Debater, side: Side, h
     role: m.role === 'ai' ? 'model' : 'user' as const,
     parts: [{ text: `${m.senderName}: ${m.content}` }]
   }));
-  if (contents.length === 0) contents.push({ role: 'user', parts: [{ text: "请开始你的开场陈词。" }] });
-  else if (contents[contents.length - 1].role === 'model') contents.push({ role: 'user', parts: [{ text: "请继续发言。" }] });
 
-  const response = await aiClient.models.generateContent({
-    model: "gemini-3-flash-preview", contents, config: { systemInstruction, temperature: 0.8, tools: [{ googleSearch: {} }] }
-  });
+  if (contents.length === 0) contents.push({ role: 'user', parts: [{ text: "请开始陈词。" }] });
+  else if (contents[contents.length - 1].role === 'model') contents.push({ role: 'user', parts: [{ text: "继续。" }] });
 
-  let sources = [];
-  if (response.candidates?.[0]?.groundingMetadata?.groundingChunks) {
-    sources = response.candidates[0].groundingMetadata.groundingChunks.filter(c => c.web).map(c => ({ uri: c.web!.uri, title: c.web!.title }));
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents,
+      config: { systemInstruction, temperature: 0.8, tools: [{ googleSearch: {} }] }
+    });
+
+    let sources = [];
+    if (response.candidates?.[0]?.groundingMetadata?.groundingChunks) {
+      sources = response.candidates[0].groundingMetadata.groundingChunks
+        .filter(c => c.web)
+        .map(c => ({ uri: c.web!.uri, title: c.web!.title || "参考来源" }));
+    }
+    return { text: response.text || "我正在思考...", sources };
+  } catch (err) {
+    return { text: "连接异常，请检查网络或 API Key。", sources: [] };
   }
-  return { text: response.text || "...", sources };
 };
 
-const getCoachAnalysis = async (topic: string, userSide: Side, lastUserMsg: string, lastOpponentMsg: string): Promise<CoachAnalysis | null> => {
+const fetchCoachAnalysis = async (topic: string, userSide: Side, lastUser: string, lastOpp: string) => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) return null;
+  const ai = new GoogleGenAI({ apiKey });
   const sideText = userSide === Side.PRO ? '正方' : '反方';
-  const prompt = `分析辩论：辩题${topic}, 用户立场${sideText}, 用户言论${lastUserMsg}, 对手言论${lastOpponentMsg}`;
+  const prompt = `分析辩论：辩题${topic}, 用户立场${sideText}, 用户言论${lastUser}, 对手言论${lastOpp}`;
   try {
-    const response = await aiClient.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
-        systemInstruction: "你是一个辩论教练，以 JSON 格式输出：userLogic, opponentLogic, rebuttalStrategies (数组), goldenSentences (数组), slangOrMeme, supportRate (数字)。",
+        systemInstruction: "你是一个辩论教练，以 JSON 输出：userLogic, opponentLogic, rebuttalStrategies (数组), goldenSentences (数组), slangOrMeme, supportRate (数字)。",
         responseMimeType: "application/json"
       }
     });
@@ -94,22 +104,31 @@ const getCoachAnalysis = async (topic: string, userSide: Side, lastUserMsg: stri
   } catch { return null; }
 };
 
-// --- 4. 组件 (Components) ---
+// --- 4. 辅助组件 ---
 const DanmuLayer = () => {
   const [danmus, setDanmus] = useState<{ id: number; text: string; top: string; speed: string }[]>([]);
   useEffect(() => {
     const interval = setInterval(() => {
-      setDanmus(prev => [...prev.slice(-8), { id: Date.now(), text: DANMU_POOL[Math.floor(Math.random() * DANMU_POOL.length)], top: `${Math.floor(Math.random() * 60 + 15)}%`, speed: `${Math.floor(Math.random() * 8 + 12)}s` }]);
+      setDanmus(prev => [...prev.slice(-8), { 
+        id: Date.now(), 
+        text: DANMU_POOL[Math.floor(Math.random() * DANMU_POOL.length)], 
+        top: `${Math.floor(Math.random() * 60 + 15)}%`, 
+        speed: `${Math.floor(Math.random() * 8 + 12)}s` 
+      }]);
     }, 4000);
     return () => clearInterval(interval);
   }, []);
   return <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden opacity-30">{danmus.map(d => <div key={d.id} className="danmu-item" style={{ top: d.top, animationDuration: d.speed }}>{d.text}</div>)}</div>;
 };
 
-// --- 5. 主程序 (Main App) ---
+// --- 5. 主应用 ---
 const App = () => {
   const [view, setView] = useState<'HOME' | 'SETUP' | 'BATTLE'>('HOME');
-  const [config, setConfig] = useState({ mode: GameMode.SOLO, topic: '', userSide: Side.PRO, opponent: DEBATERS[0], opponent2: DEBATERS[1], messages: [] as Message[], turn: 0, coach: null as CoachAnalysis | null });
+  const [config, setConfig] = useState({ 
+    mode: GameMode.SOLO, topic: '', userSide: Side.PRO, 
+    opponent: DEBATERS[0], opponent2: DEBATERS[1], 
+    messages: [] as Message[], turn: 0, coach: null as CoachAnalysis | null 
+  });
   const [isThinking, setIsThinking] = useState(false);
   const [input, setInput] = useState('');
   const [editSide, setEditSide] = useState(Side.PRO);
@@ -118,25 +137,25 @@ const App = () => {
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }, [config.messages, isThinking]);
 
   const startBattle = () => {
-    const msgs: Message[] = [{ role: 'system', senderName: 'CORE', content: `博弈场开启。辩题：${config.topic}`, timestamp: Date.now() }];
-    setConfig(p => ({ ...p, messages: msgs, turn: 0 }));
+    const msgs: Message[] = [{ role: 'system', senderName: 'CORE', content: `博弈开启。辩题：${config.topic}`, timestamp: Date.now() }];
+    setConfig(p => ({ ...p, messages: msgs, turn: 0, coach: null }));
     setView('BATTLE');
     if (config.mode === GameMode.SOLO) {
-        setTimeout(() => runAi(msgs, config.opponent, config.userSide === Side.PRO ? Side.CON : Side.PRO), 1000);
+      setTimeout(() => runAi(msgs, config.opponent, config.userSide === Side.PRO ? Side.CON : Side.PRO), 1000);
     } else if (config.mode === GameMode.AI_VS_AI) {
-        setTimeout(() => runAi(msgs, config.opponent, Side.PRO), 1000);
+      setTimeout(() => runAi(msgs, config.opponent, Side.PRO), 1000);
     }
   };
 
   const runAi = async (history: Message[], debater: Debater, side: Side) => {
     setIsThinking(true);
-    const res = await getDebaterResponse(config.topic, debater, side, history);
+    const res = await fetchDebaterResponse(config.topic, debater, side, history);
     const msg: Message = { role: 'ai', senderName: debater.name, content: res.text, side, sources: res.sources, timestamp: Date.now() };
     setConfig(p => {
       const nextMsgs = [...p.messages, msg];
       const nextTurn = p.turn + (side === Side.CON ? 1 : 0);
-      if (p.mode === GameMode.AI_VS_AI && nextTurn < MAX_ROUNDS) {
-          setTimeout(() => runAi(nextMsgs, side === Side.PRO ? (p.opponent2 || DEBATERS[1]) : p.opponent, side === Side.PRO ? Side.CON : Side.PRO), 4000);
+      if (p.mode === GameMode.AI_VS_AI && nextTurn < 5) {
+        setTimeout(() => runAi(nextMsgs, side === Side.PRO ? (p.opponent2 || DEBATERS[1]) : p.opponent, side === Side.PRO ? Side.CON : Side.PRO), 4000);
       }
       return { ...p, messages: nextMsgs, turn: nextTurn };
     });
@@ -151,10 +170,9 @@ const App = () => {
     setInput('');
     runAi(nextMsgs, config.opponent, config.userSide === Side.PRO ? Side.CON : Side.PRO);
     const aiLast = nextMsgs.filter(m => m.role === 'ai').pop()?.content || "";
-    getCoachAnalysis(config.topic, config.userSide, input, aiLast).then(c => setConfig(p => ({ ...p, coach: c })));
+    fetchCoachAnalysis(config.topic, config.userSide, input, aiLast).then(c => { if(c) setConfig(p => ({ ...p, coach: c })); });
   };
 
-  const MAX_ROUNDS = 5;
   const currD = editSide === Side.PRO ? config.opponent : (config.opponent2 || DEBATERS[1]);
 
   return (
@@ -163,9 +181,10 @@ const App = () => {
         <div className="flex flex-col items-center justify-center min-h-screen animate-in fade-in duration-1000">
           <h1 className="text-7xl font-black mb-4 text-orange-500">辩手训练场</h1>
           <p className="text-slate-600 tracking-[0.5em] mb-12">MINIMALIST LOGIC SPACE</p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 w-full max-w-5xl">
-            {[{id: GameMode.SOLO, t: 'AI 对垒'}, {id: GameMode.AI_VS_AI, t: '观摩博弈'}, {id: GameMode.DUO, t: '本地切磋'}].map(m => (
-              <button key={m.id} onClick={() => { setConfig({...config, mode: m.id}); setView('SETUP'); }} className="glass p-10 rounded-[2rem] hover:border-orange-500/50 transition-all">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 w-full max-w-5xl px-6">
+            {[{id: GameMode.SOLO, t: 'AI 对垒', i: 'fa-robot'}, {id: GameMode.AI_VS_AI, t: '观摩博弈', i: 'fa-eye'}, {id: GameMode.DUO, t: '本地切磋', i: 'fa-user-friends'}].map(m => (
+              <button key={m.id} onClick={() => { setConfig({...config, mode: m.id as GameMode}); setView('SETUP'); }} className="glass p-10 rounded-[2rem] hover:border-orange-500/50 transition-all flex flex-col items-center group">
+                <i className={`fas ${m.i} text-3xl text-orange-500 mb-6 group-hover:scale-110 transition-transform`}></i>
                 <h3 className="text-xl font-bold">{m.t}</h3>
               </button>
             ))}
@@ -177,38 +196,41 @@ const App = () => {
         <div className="max-w-4xl mx-auto py-20 px-4">
           <div className="glass p-10 rounded-[3rem] space-y-8">
             <header className="flex justify-between border-b border-white/5 pb-4">
-              <button onClick={() => setView('HOME')}><i className="fas fa-arrow-left"></i></button>
+              <button onClick={() => setView('HOME')} className="text-slate-500 hover:text-white"><i className="fas fa-arrow-left"></i></button>
               <h2 className="text-[10px] tracking-widest uppercase text-orange-500">战备中心 // {config.mode}</h2>
               <div />
             </header>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
               <div className="space-y-6">
                 <div>
-                  <label className="text-[9px] block mb-2 text-slate-500">博弈辩题</label>
+                  <label className="text-[9px] block mb-2 text-slate-500 uppercase tracking-widest">博弈辩题</label>
                   <textarea className="w-full minimal-input p-4 rounded-xl h-24 outline-none text-xs" value={config.topic} onChange={e => setConfig({...config, topic: e.target.value})} placeholder="输入你的辩题..." />
-                  <button onClick={() => setConfig({...config, topic: RANDOM_TOPICS[Math.floor(Math.random()*RANDOM_TOPICS.length)]})} className="text-[9px] text-orange-500 mt-2">随机抽取</button>
+                  <button onClick={() => setConfig({...config, topic: RANDOM_TOPICS[Math.floor(Math.random()*RANDOM_TOPICS.length)]})} className="text-[9px] text-orange-500 mt-2 border-b border-orange-500/20">随机抽取</button>
                 </div>
                 {config.mode === GameMode.AI_VS_AI && (
                   <div className="flex bg-white/5 p-1 rounded-xl">
-                    <button onClick={() => setEditSide(Side.PRO)} className={`flex-1 py-2 text-[10px] rounded-lg ${editSide === Side.PRO ? 'bg-orange-500 text-black' : 'text-slate-500'}`}>正方选手</button>
-                    <button onClick={() => setEditSide(Side.CON)} className={`flex-1 py-2 text-[10px] rounded-lg ${editSide === Side.CON ? 'bg-orange-500 text-black' : 'text-slate-500'}`}>反方选手</button>
+                    <button onClick={() => setEditSide(Side.PRO)} className={`flex-1 py-2 text-[10px] rounded-lg transition-all ${editSide === Side.PRO ? 'bg-orange-500 text-black' : 'text-slate-500'}`}>正方选手</button>
+                    <button onClick={() => setEditSide(Side.CON)} className={`flex-1 py-2 text-[10px] rounded-lg transition-all ${editSide === Side.CON ? 'bg-orange-500 text-black' : 'text-slate-500'}`}>反方选手</button>
                   </div>
                 )}
-                <button onClick={startBattle} disabled={!config.topic} className="w-full bg-white text-black py-4 rounded-2xl font-black text-xs hover:bg-orange-500 transition-all">进入博弈</button>
+                <button onClick={startBattle} disabled={!config.topic} className="w-full bg-white text-black py-4 rounded-2xl font-black text-xs hover:bg-orange-500 transition-all disabled:opacity-20">开始博弈</button>
               </div>
               <div className="space-y-4">
-                <label className="text-[9px] block text-slate-500">选择辩手 (24位顶级 AI)</label>
-                <div className="grid grid-cols-4 gap-2 max-h-[200px] overflow-y-auto custom-scrollbar">
-                  {DEBATERS.map(d => (
-                    <button key={d.id} onClick={() => editSide === Side.PRO ? setConfig({...config, opponent: d}) : setConfig({...config, opponent2: d})} className={`flex flex-col items-center p-2 rounded-lg ${(editSide === Side.PRO ? config.opponent.id : config.opponent2.id) === d.id ? 'bg-orange-500/10' : 'opacity-40'}`}>
-                      <img src={d.avatar} className="w-10 h-10 rounded-full mb-1" />
-                      <span className="text-[8px]">{d.name}</span>
-                    </button>
-                  ))}
+                <label className="text-[9px] block text-slate-500 uppercase tracking-widest">选择辩手 (24位顶级 AI)</label>
+                <div className="grid grid-cols-4 gap-2 max-h-[200px] overflow-y-auto custom-scrollbar pr-2">
+                  {DEBATERS.map(d => {
+                    const activeId = editSide === Side.PRO ? config.opponent.id : config.opponent2.id;
+                    return (
+                      <button key={d.id} onClick={() => editSide === Side.PRO ? setConfig({...config, opponent: d}) : setConfig({...config, opponent2: d})} className={`flex flex-col items-center p-2 rounded-lg transition-all ${activeId === d.id ? 'bg-orange-500/20 ring-1 ring-orange-500/50' : 'opacity-40 grayscale hover:opacity-100 hover:grayscale-0'}`}>
+                        <img src={d.avatar} className="w-10 h-10 rounded-full mb-1" />
+                        <span className="text-[8px] truncate w-full text-center">{d.name}</span>
+                      </button>
+                    );
+                  })}
                 </div>
-                <div className="bg-white/5 p-4 rounded-xl text-[10px]">
-                  <p className="text-orange-400 font-bold mb-1">{currD.name} · {currD.style}</p>
-                  <p className="text-slate-400 italic">{currD.description}</p>
+                <div className="bg-white/5 p-4 rounded-xl text-[10px] border border-white/5">
+                  <p className="text-orange-400 font-bold mb-1 uppercase tracking-tighter">{currD.name} · {currD.style}</p>
+                  <p className="text-slate-400 italic leading-relaxed">{currD.description}</p>
                 </div>
               </div>
             </div>
@@ -219,34 +241,34 @@ const App = () => {
       {view === 'BATTLE' && (
         <div className="h-screen flex flex-col relative overflow-hidden">
           <DanmuLayer />
-          <header className="h-20 glass flex items-center justify-between px-10 z-20">
-            <button onClick={() => setView('HOME')} className="text-slate-500"><i className="fas fa-times"></i></button>
+          <header className="h-20 glass flex items-center justify-between px-10 z-20 border-b border-white/5">
+            <button onClick={() => setView('HOME')} className="text-slate-500 hover:text-white"><i className="fas fa-times"></i></button>
             <div className="text-center">
-                <h1 className="text-[10px] font-black tracking-widest mb-1">{config.topic}</h1>
-                <p className="text-[8px] text-slate-600">TURN {config.turn}/{MAX_ROUNDS}</p>
+                <h1 className="text-[10px] font-black tracking-widest mb-1 uppercase truncate max-w-xs">{config.topic}</h1>
+                <p className="text-[8px] text-slate-600 uppercase tracking-widest">回合 {config.turn}/5</p>
             </div>
             <div className="w-10" />
           </header>
-          <main ref={scrollRef} className="flex-1 overflow-y-auto p-10 space-y-12 z-10 custom-scrollbar">
+          <main ref={scrollRef} className="flex-1 overflow-y-auto p-6 md:p-12 space-y-12 z-10 custom-scrollbar">
             {config.messages.map((m, i) => (
               <div key={i} className={`flex flex-col ${m.side === Side.PRO ? 'items-start' : m.side === Side.CON ? 'items-end' : 'items-center'}`}>
-                {m.role === 'system' ? <div className="text-[8px] text-slate-600 tracking-[0.4em]">{m.content}</div> : (
-                  <div className="max-w-[70%]">
-                    <p className={`text-[8px] mb-2 font-black ${m.side === Side.PRO ? 'text-emerald-500' : 'text-rose-500'}`}>{m.senderName} · {m.side === Side.PRO ? '正方' : '反方'}</p>
-                    <div className={`p-6 rounded-[2rem] text-[13px] border ${m.side === Side.PRO ? 'bg-emerald-500/5 border-emerald-500/10' : 'bg-rose-500/5 border-rose-500/10'}`}>
+                {m.role === 'system' ? <div className="text-[8px] text-slate-600 tracking-[0.4em] uppercase py-10 opacity-50">{m.content}</div> : (
+                  <div className="max-w-[85%] md:max-w-[70%]">
+                    <p className={`text-[9px] mb-2 font-black uppercase tracking-widest ${m.side === Side.PRO ? 'text-emerald-500' : 'text-rose-500'}`}>{m.senderName} · {m.side === Side.PRO ? '正方' : '反方'}</p>
+                    <div className={`p-6 md:p-8 rounded-[2rem] text-[13px] leading-relaxed border shadow-sm ${m.side === Side.PRO ? 'bg-emerald-500/5 border-emerald-500/10' : 'bg-rose-500/5 border-rose-500/10'}`}>
                       {m.content}
                     </div>
                   </div>
                 )}
               </div>
             ))}
-            {isThinking && <div className="text-[8px] animate-pulse">AI 正在思考...</div>}
+            {isThinking && <div className="text-[9px] animate-pulse text-orange-500/50 uppercase tracking-widest flex items-center gap-2 px-4 py-2 bg-orange-500/5 rounded-full w-fit mx-auto mt-4 border border-orange-500/10">AI 正在组织逻辑...</div>}
           </main>
           {config.mode !== GameMode.AI_VS_AI && (
-            <footer className="p-8 glass z-20">
+            <footer className="p-8 glass z-20 border-t border-white/5">
               <div className="max-w-4xl mx-auto flex gap-4">
-                <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1 minimal-input p-4 rounded-full outline-none text-xs" placeholder="输入反击..." />
-                <button onClick={handleSend} className="bg-orange-500 text-black w-12 h-12 rounded-full"><i className="fas fa-paper-plane"></i></button>
+                <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1 minimal-input p-4 px-6 rounded-full outline-none text-xs" placeholder="输入反击观点..." />
+                <button onClick={handleSend} disabled={isThinking || !input.trim()} className="bg-orange-500 text-black w-12 h-12 rounded-full flex items-center justify-center hover:scale-105 transition-all disabled:opacity-20"><i className="fas fa-paper-plane"></i></button>
               </div>
             </footer>
           )}
@@ -256,5 +278,8 @@ const App = () => {
   );
 };
 
-const root = ReactDOM.createRoot(document.getElementById('root')!);
-root.render(<React.StrictMode><App /></React.StrictMode>);
+const rootElement = document.getElementById('root');
+if (rootElement) {
+  const root = ReactDOM.createRoot(rootElement);
+  root.render(<React.StrictMode><App /></React.StrictMode>);
+}
